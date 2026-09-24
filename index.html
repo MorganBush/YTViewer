@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Video Viewer</title>
+<style>
+  :root { --bg:#f5f5f4; --fg:#1c1917; --muted:#78716c; --card:#fff; --line:#e7e5e4; --accent:#2563eb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141414; --fg:#f5f5f4; --muted:#a8a29e; --card:#1f1f1f; --line:#2e2e2e; --accent:#60a5fa; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:20px 16px 40px; }
+  form { display:flex; gap:8px; }
+  input { flex:1; min-width:0; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--fg); font-size:15px; }
+  button { padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  .msg { color:var(--muted); font-size:13px; min-height:20px; margin:6px 2px 10px; }
+  .player { position:relative; aspect-ratio:16/9; background:#000; border-radius:10px; overflow:hidden; }
+  .player iframe { position:absolute; inset:0; width:100%; height:100%; border:0; }
+  .player .empty { position:absolute; inset:0; display:grid; place-items:center; color:#888; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:24px 0 8px; }
+  ul { list-style:none; padding:0; margin:0; }
+  li { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--line); }
+  li img { width:96px; aspect-ratio:16/9; object-fit:cover; border-radius:4px; cursor:pointer; }
+  li a { flex:1; color:var(--fg); text-decoration:none; overflow-wrap:anywhere; cursor:pointer; }
+  li .x { background:none; color:var(--muted); padding:4px 8px; }
+  .tip { color:var(--muted); font-size:13px; margin-top:24px; }
+  code { background:var(--card); border:1px solid var(--line); padding:1px 4px; border-radius:4px; }
+</style>
+</head>
+<body>
+<main>
+  <form id="f">
+    <input id="u" placeholder="Paste a YouTube link or video ID" autocomplete="off" autofocus>
+    <button>Play</button>
+  </form>
+  <div class="msg" id="msg"></div>
+  <div class="player" id="player"><div class="empty">Paste a link above</div></div>
+
+  <h2>Recent</h2>
+  <ul id="recent"></ul>
+
+  <p class="tip">Tip: add <code>?u=</code> plus a YouTube link to this page's address to open a video directly. A bookmarklet can do that for you.</p>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const KEY = 'viewer-recent';
+
+// Pull video ID, start time and playlist from any common YouTube URL format
+function parse(input) {
+  input = (input || '').trim();
+  if (/^[\w-]{11}$/.test(input)) return { id: input };
+  let url;
+  try { url = new URL(input.startsWith('http') ? input : 'https://' + input); } catch { return null; }
+  const host = url.hostname.replace(/^www\.|^m\.|^music\./, '');
+  let id = null;
+  if (host === 'youtu.be') id = url.pathname.slice(1, 12);
+  else if (host.endsWith('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+    id = url.searchParams.get('v');
+    const m = url.pathname.match(/^\/(embed|shorts|live|v)\/([\w-]{11})/);
+    if (!id && m) id = m[2];
+  }
+  const list = url.searchParams.get('list');
+  if (!id && !list) return null;
+  if (id && !/^[\w-]{11}$/.test(id)) return null;
+  return { id, list, start: toSeconds(url.searchParams.get('t') || url.searchParams.get('start')) };
+}
+
+function toSeconds(t) {
+  if (!t) return 0;
+  if (/^\d+$/.test(t)) return +t;
+  const m = t.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/);
+  return m ? (+m[1]||0)*3600 + (+m[2]||0)*60 + (+m[3]||0) : 0;
+}
+
+function play(v, save = true) {
+  const p = new URLSearchParams({ autoplay: 1, rel: 0, modestbranding: 1 });
+  if (v.start) p.set('start', v.start);
+  if (v.list) p.set('list', v.list);
+  const path = v.id ? v.id : 'videoseries';
+  $('player').innerHTML =
+    `<iframe src="https://www.youtube-nocookie.com/embed/${path}?${p}"
+      allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+      referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>`;
+  $('msg').textContent = 'If it says "video unavailable", the uploader has blocked embedding. Nothing a viewer can fix that.';
+  if (save) remember(v);
+}
+
+function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } }
+function store(list) { try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {} }
+
+function remember(v) {
+  const key = v.id || v.list;
+  const list = load().filter(x => (x.id || x.list) !== key);
+  list.unshift(v);
+  store(list.slice(0, 20));
+  render();
+}
+
+function render() {
+  const list = load();
+  $('recent').innerHTML = list.length ? '' : '<li style="color:var(--muted)">Nothing yet</li>';
+  list.forEach((v, i) => {
+    const li = document.createElement('li');
+    const thumb = v.id ? `<img src="https://i.ytimg.com/vi/${v.id}/mqdefault.jpg" alt="">` : '';
+    const label = v.id ? `youtu.be/${v.id}${v.start ? ' @ ' + v.start + 's' : ''}` : `Playlist ${v.list}`;
+    li.innerHTML = `${thumb}<a>${label}</a><button class="x" title="Remove">✕</button>`;
+    li.querySelectorAll('img, a').forEach(el => el.onclick = () => play(v, false));
+    li.querySelector('.x').onclick = () => { const l = load(); l.splice(i, 1); store(l); render(); };
+    $('recent').appendChild(li);
+  });
+}
+
+$('f').onsubmit = e => {
+  e.preventDefault();
+  const v = parse($('u').value);
+  if (!v) { $('msg').textContent = "That doesn't look like a YouTube link."; return; }
+  play(v);
+  $('u').value = '';
+};
+
+// Support ?u=<link> or ?v=<id> on this page's own URL
+const q = new URLSearchParams(location.search);
+const incoming = q.get('u') || q.get('v');
+if (incoming) { const v = parse(incoming); if (v) play(v); }
+render();
+</script>
+</body>
+</html>
